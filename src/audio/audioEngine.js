@@ -66,15 +66,18 @@ export class AudioEngine {
 
     this.mediaDest = this.ctx.createMediaStreamDestination();
 
-    // Master volume node
+    // Master volume node for audible internal sources (Synth, uploaded MP3)
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = 0.85;
 
-    // Connect master to speakers and to media recording stream
+    // Route internal sources to speakers, visualizer analyser, and WebM recorder
+    this.masterGain.connect(this.ctx.destination);
     this.masterGain.connect(this.analyser);
-    this.analyser.connect(this.ctx.destination);
-    this.analyser.connect(this.mediaDest);
+    this.masterGain.connect(this.mediaDest);
 
+    // CRITICAL: this.analyser is intentionally NOT connected to this.ctx.destination.
+    // This allows external sources (Spotify, YouTube tab, microphone) to feed the visualizer
+    // without playing back through the speakers and causing an echo.
     this.isInitialized = true;
   }
 
@@ -285,10 +288,10 @@ export class AudioEngine {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       this.micStream = stream;
-      const micSource = this.ctx.createMediaStreamSource(stream);
+      this.micSourceNode = this.ctx.createMediaStreamSource(stream);
 
-      // Connect mic to analyser and mediaDest, NOT masterGain to avoid acoustic feedback
-      micSource.connect(this.analyser);
+      // Connect mic to analyser ONLY, never to speakers (avoids acoustic feedback loop)
+      this.micSourceNode.connect(this.analyser);
       this.currentMode = 'mic';
       this.isPlaying = true;
       this.notifyState('Microphone (Live)');
@@ -323,11 +326,11 @@ export class AudioEngine {
       stream.getVideoTracks().forEach(track => track.stop());
 
       this.tabStream = stream;
-      const tabSource = this.ctx.createMediaStreamSource(new MediaStream(audioTracks));
+      this.tabSourceNode = this.ctx.createMediaStreamSource(new MediaStream(audioTracks));
 
-      // Connect to analyser & mediaDest, but NOT masterGain (user already hears the tab)
-      tabSource.connect(this.analyser);
-      tabSource.connect(this.mediaDest);
+      // Connect to analyser & mediaDest ONLY (never to destination, user already hears the source tab)
+      this.tabSourceNode.connect(this.analyser);
+      this.tabSourceNode.connect(this.mediaDest);
 
       this.currentMode = 'tab';
       this.isPlaying = true;
@@ -359,9 +362,17 @@ export class AudioEngine {
     if (this.audioElement) {
       this.audioElement.pause();
     }
+    if (this.micSourceNode) {
+      try { this.micSourceNode.disconnect(); } catch (e) {}
+      this.micSourceNode = null;
+    }
     if (this.micStream) {
       this.micStream.getTracks().forEach(t => t.stop());
       this.micStream = null;
+    }
+    if (this.tabSourceNode) {
+      try { this.tabSourceNode.disconnect(); } catch (e) {}
+      this.tabSourceNode = null;
     }
     if (this.tabStream) {
       this.tabStream.getTracks().forEach(t => t.stop());
